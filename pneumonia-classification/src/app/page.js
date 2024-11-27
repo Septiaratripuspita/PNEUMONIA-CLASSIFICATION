@@ -2,7 +2,10 @@
 
 import Image from "next/image";
 import { Share2, Facebook, Linkedin } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/predict/";
 
 export default function PneumoniaClassification() {
   const [selectedImage, setSelectedImage] = useState(null);
@@ -10,20 +13,34 @@ export default function PneumoniaClassification() {
   const [apiResult, setApiResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState(null);
+  const [lastUploadedFile, setLastUploadedFile] = useState(null);
   const fileInputRef = useRef(null);
 
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (file && file.type.substr(0, 5) === "image") {
-      setUploadedFile(file);
-      setSelectedImage(null);
-      setError(null);
-    } else {
-      setError("Please select a valid image file");
-    }
-  };
+  const handleFileUpload = useCallback(
+    (event) => {
+      const file = event.target.files[0];
+      if (file && file.type.startsWith("image/")) {
+        if (
+          lastUploadedFile &&
+          file.name === lastUploadedFile.name &&
+          file.size === lastUploadedFile.size
+        ) {
+          console.warn(
+            "Warning: The same file seems to have been uploaded again."
+          );
+        }
+        setUploadedFile(file);
+        setLastUploadedFile(file);
+        setSelectedImage(null);
+        setError(null);
+      } else {
+        setError("Please select a valid image file");
+      }
+    },
+    [lastUploadedFile]
+  );
 
-  const handleSubmit = async () => {
+  const handleSubmit = useCallback(async () => {
     if (selectedImage || uploadedFile) {
       setIsProcessing(true);
       setApiResult(null);
@@ -33,6 +50,9 @@ export default function PneumoniaClassification() {
         const formData = new FormData();
         if (uploadedFile) {
           formData.append("file", uploadedFile);
+          console.log("File name:", uploadedFile.name);
+          console.log("File size:", uploadedFile.size);
+          console.log("File type:", uploadedFile.type);
         } else {
           const response = await fetch(`/images/normal${selectedImage}.png`);
           const blob = await response.blob();
@@ -40,22 +60,36 @@ export default function PneumoniaClassification() {
         }
 
         console.log("Sending request to API...");
-        const apiResponse = await fetch("http://localhost:8000/predict/", {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 seconds timeout
+
+        const apiResponse = await fetch(API_URL, {
           method: "POST",
           body: formData,
+          signal: controller.signal,
         });
 
+        clearTimeout(timeoutId);
+
         if (!apiResponse.ok) {
-          throw new Error(`HTTP error! status: ${apiResponse.status}`);
+          const errorText = await apiResponse.text();
+          throw new Error(
+            `HTTP error! status: ${apiResponse.status}, message: ${errorText}`
+          );
         }
 
         const result = await apiResponse.json();
-        console.log("API Response:", result);
+        console.log("Full API Response:", JSON.stringify(result, null, 2));
+
+        if (!result.class || !result.confidence || !result.probabilities) {
+          throw new Error("Invalid API response format");
+        }
+
         setApiResult(result);
       } catch (error) {
         console.error("Error processing image:", error);
         setError(
-          "An error occurred while processing the image. Please try again."
+          `An error occurred while processing the image: ${error.message}`
         );
       } finally {
         setIsProcessing(false);
@@ -63,7 +97,7 @@ export default function PneumoniaClassification() {
     } else {
       setError("Please select or upload an image before submitting");
     }
-  };
+  }, [selectedImage, uploadedFile]);
 
   return (
     <div className="container mx-auto p-6 space-y-12">
